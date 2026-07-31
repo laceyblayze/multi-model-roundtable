@@ -12,12 +12,18 @@ loadEnv(join(root, ".env"));
 const port = Number(process.env.PORT || 4177);
 const sessionSecret = process.env.SESSION_SECRET || "dev-roundtable-secret-change-before-public-deploy";
 const authPassword = process.env.ROUNDTABLE_PASSWORD || "";
+const adminPassword = process.env.ADMIN_PASSWORD || "";
 const authRequired = Boolean(authPassword);
+const adminRequired = Boolean(adminPassword);
 const secureCookies = process.env.NODE_ENV === "production";
-const modelTurnsPerHour = Number(process.env.MODEL_TURNS_PER_HOUR || 30);
-const userMessagesPerHour = Number(process.env.USER_MESSAGES_PER_HOUR || 120);
-const maxTranscriptMessages = Number(process.env.MAX_TRANSCRIPT_MESSAGES || 200);
+const runtimeSettings = {
+  modelTurnsPerHour: Number(process.env.MODEL_TURNS_PER_HOUR || 30),
+  userMessagesPerHour: Number(process.env.USER_MESSAGES_PER_HOUR || 120),
+  maxTranscriptMessages: Number(process.env.MAX_TRANSCRIPT_MESSAGES || 200),
+};
 const sessions = new Map();
+let pool = null;
+let databaseBacked = false;
 
 validateProductionConfig();
 
@@ -60,6 +66,8 @@ const mimeTypes = {
   ".svg": "image/svg+xml",
 };
 
+await initStore();
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -81,6 +89,7 @@ server.listen(port, () => {
 
 async function routeApi(req, res, url) {
   let session = getSession(req);
+  const adminSession = getAdminSession(req);
   if (!session && !authRequired) {
     session = createSession();
     setSessionCookie(res, session.id);
@@ -90,6 +99,8 @@ async function routeApi(req, res, url) {
     sendJson(res, 200, {
       ok: true,
       authRequired,
+      adminRequired,
+      databaseBacked,
       configuredProviders: Object.values(participants)
         .filter((participant) => participant.role === "model" && Boolean(process.env[participant.keyName]))
         .map((participant) => participant.id),
@@ -122,6 +133,74 @@ async function routeApi(req, res, url) {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/admin/login") {
+    const body = await readJson(req);
+    if (!adminRequired) {
+      const openAdminSession = createAdminSession();
+      setAdminSessionCookie(res, openAdminSession.id);
+      sendJson(res, 200, adminSnapshot(openAdminSession));
+      return;
+    }
+    if (String(body.password || "") !== adminPassword) {
+      sendJson(res, 401, { error: "Incorrect admin password." });
+      return;
+    }
+    const nextAdminSession = createAdminSession();
+    setAdminSessionCookie(res, nextAdminSession.id);
+    sendJson(res, 200, adminSnapshot(nextAdminSession));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/admin/logout") {
+    clearAdminSessionCookie(res);
+    if (adminSession) sessions.delete(adminSession.id);
+    sendJson(res, 200, { adminAuthenticated: false, adminRequired });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/admin") {
+    sendJson(res, 200, adminSession ? adminSnapshot(adminSession) : { adminAuthenticated: false, adminRequired });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/admin/")) {
+    if (!adminSession) {
+      sendJson(res, 401, { error: "Admin password required.", adminAuthenticated: false, adminRequired });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/admin/limits") {
+      const body = await readJson(req);
+      const nextSettings = {
+        modelTurnsPerHour: positiveInt(body.modelTurnsPerHour, runtimeSettings.modelTurnsPerHour),
+        userMessagesPerHour: positiveInt(body.userMessagesPerHour, runtimeSettings.userMessagesPerHour),
+        maxTranscriptMessages: positiveInt(body.maxTranscriptMessages, runtimeSettings.maxTranscriptMessages),
+      };
+      Object.assign(runtimeSettings, nextSettings);
+      await saveSettings();
+      await trimTranscript();
+      sendJson(res, 200, adminSnapshot(adminSession));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/admin/clear-transcript") {
+      state.messages = [];
+      await clearTranscriptStore();
+      sendJson(res, 200, adminSnapshot(adminSession));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/admin/clear-sessions") {
+      const keepUser = session?.id;
+      const keepAdmin = adminSession.id;
+      for (const id of sessions.keys()) {
+        if (id !== keepUser && id !== keepAdmin) sessions.delete(id);
+      }
+      sendJson(res, 200, adminSnapshot(adminSession));
+      return;
+    }
+  }
+
   if (req.method === "GET" && url.pathname === "/api/state") {
     sendJson(res, 200, session ? snapshot(session) : publicSnapshot());
     return;
@@ -139,13 +218,15 @@ async function routeApi(req, res, url) {
       sendJson(res, 400, { error: "Message text is required." });
       return;
     }
-    const messageLimit = checkLimit(session, "userMessages", userMessagesPerHour);
+    const messageLimit = checkLimit(session, "userMessages", runtimeSettings.userMessagesPerHour);
     if (!messageLimit.allowed) {
       sendJson(res, 429, snapshot(session, messageLimit.message));
       return;
     }
-    state.messages.push(makeMessage("user", text));
-    trimTranscript();
+    const message = makeMessage("user", text);
+    state.messages.push(message);
+    await saveMessage(message);
+    await trimTranscript();
     sendJson(res, 200, snapshot(session));
     return;
   }
@@ -164,7 +245,7 @@ async function routeApi(req, res, url) {
       sendJson(res, 400, { error: "Choose at least one model in the turn order." });
       return;
     }
-    const turnLimit = checkLimit(session, "modelTurns", modelTurnsPerHour);
+    const turnLimit = checkLimit(session, "modelTurns", runtimeSettings.modelTurnsPerHour);
     if (!turnLimit.allowed) {
       sendJson(res, 429, snapshot(session, turnLimit.message));
       return;
@@ -174,17 +255,20 @@ async function routeApi(req, res, url) {
     const speaker = getNextSpeaker();
     const pending = makeMessage(speaker, "", "thinking");
     state.messages.push(pending);
+    await saveMessage(pending);
 
     try {
       pending.text = await callModel(speaker);
       pending.status = "complete";
       pending.finishedAt = new Date().toISOString();
-      trimTranscript();
+      await saveMessage(pending);
+      await trimTranscript();
       sendJson(res, 200, snapshot(session));
     } catch (error) {
       pending.text = error.message || "The model turn failed.";
       pending.status = "error";
       pending.finishedAt = new Date().toISOString();
+      await saveMessage(pending);
       sendJson(res, 502, snapshot(session));
     } finally {
       state.locked = false;
@@ -194,6 +278,7 @@ async function routeApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/reset") {
     state.messages = [];
+    await clearTranscriptStore();
     sendJson(res, 200, snapshot(session));
     return;
   }
@@ -331,10 +416,9 @@ function publicSnapshot(error = "") {
     messages: [],
     nextSpeaker: state.turnOrder[0],
     limits: {
-      modelTurnsPerHour,
-      userMessagesPerHour,
-      maxTranscriptMessages,
+      ...runtimeSettings,
     },
+    persistence: persistenceSnapshot(),
   };
 }
 
@@ -349,12 +433,32 @@ function snapshot(session, error = "") {
     messages: state.messages,
     nextSpeaker: state.turnOrder.length ? getNextSpeaker() : null,
     limits: {
-      modelTurnsPerHour,
-      userMessagesPerHour,
-      maxTranscriptMessages,
-      remainingModelTurns: remainingLimit(session, "modelTurns", modelTurnsPerHour),
-      remainingUserMessages: remainingLimit(session, "userMessages", userMessagesPerHour),
+      ...runtimeSettings,
+      remainingModelTurns: remainingLimit(session, "modelTurns", runtimeSettings.modelTurnsPerHour),
+      remainingUserMessages: remainingLimit(session, "userMessages", runtimeSettings.userMessagesPerHour),
     },
+    persistence: persistenceSnapshot(),
+  };
+}
+
+function adminSnapshot(session) {
+  return {
+    adminAuthenticated: true,
+    adminRequired,
+    settings: runtimeSettings,
+    sessionCount: sessions.size,
+    transcriptCount: state.messages.length,
+    databaseBacked,
+    limits: {
+      remainingAdminActions: remainingLimit(session, "adminActions", 60),
+    },
+  };
+}
+
+function persistenceSnapshot() {
+  return {
+    databaseBacked,
+    transcriptCount: state.messages.length,
   };
 }
 
@@ -407,9 +511,16 @@ function createSession() {
     usage: {
       modelTurns: [],
       userMessages: [],
+      adminActions: [],
     },
   };
   sessions.set(id, session);
+  return session;
+}
+
+function createAdminSession() {
+  const session = createSession();
+  session.admin = true;
   return session;
 }
 
@@ -419,6 +530,15 @@ function getSession(req) {
   const [id, signature] = cookie.split(".");
   if (!id || !signature || sign(id) !== signature) return null;
   return sessions.get(id) || null;
+}
+
+function getAdminSession(req) {
+  const cookie = parseCookies(req.headers.cookie || "").roundtable_admin;
+  if (!cookie) return null;
+  const [id, signature] = cookie.split(".");
+  if (!id || !signature || sign(`admin:${id}`) !== signature) return null;
+  const session = sessions.get(id);
+  return session?.admin ? session : null;
 }
 
 function setSessionCookie(res, id) {
@@ -434,6 +554,17 @@ function setSessionCookie(res, id) {
   res.setHeader("Set-Cookie", attributes.join("; "));
 }
 
+function setAdminSessionCookie(res, id) {
+  appendCookie(res, [
+    `roundtable_admin=${id}.${sign(`admin:${id}`)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=86400",
+    ...(secureCookies ? ["Secure"] : []),
+  ].join("; "));
+}
+
 function clearSessionCookie(res) {
   const attributes = [
     "roundtable_session=",
@@ -444,6 +575,26 @@ function clearSessionCookie(res) {
   ];
   if (secureCookies) attributes.push("Secure");
   res.setHeader("Set-Cookie", attributes.join("; "));
+}
+
+function clearAdminSessionCookie(res) {
+  appendCookie(res, [
+    "roundtable_admin=",
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0",
+    ...(secureCookies ? ["Secure"] : []),
+  ].join("; "));
+}
+
+function appendCookie(res, cookie) {
+  const existing = res.getHeader("Set-Cookie");
+  if (!existing) {
+    res.setHeader("Set-Cookie", cookie);
+    return;
+  }
+  res.setHeader("Set-Cookie", Array.isArray(existing) ? [...existing, cookie] : [existing, cookie]);
 }
 
 function parseCookies(header) {
@@ -485,10 +636,118 @@ function minutesUntilReset(session, bucket) {
   return Math.max(1, Math.ceil((oldest + 60 * 60 * 1000 - Date.now()) / 60000));
 }
 
-function trimTranscript() {
-  if (state.messages.length > maxTranscriptMessages) {
-    state.messages = state.messages.slice(-maxTranscriptMessages);
+async function trimTranscript() {
+  if (state.messages.length > runtimeSettings.maxTranscriptMessages) {
+    state.messages = state.messages.slice(-runtimeSettings.maxTranscriptMessages);
   }
+  if (databaseBacked) {
+    await pool.query(
+      `DELETE FROM messages
+       WHERE id NOT IN (
+         SELECT id FROM messages ORDER BY created_at DESC LIMIT $1
+       )`,
+      [runtimeSettings.maxTranscriptMessages],
+    );
+  }
+}
+
+function positiveInt(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 10000) return fallback;
+  return parsed;
+}
+
+async function initStore() {
+  if (!process.env.DATABASE_URL) return;
+  const { Pool } = await import("pg");
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_URL.includes("localhost") ? false : { rejectUnauthorized: false },
+  });
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id text PRIMARY KEY,
+      speaker text NOT NULL,
+      text text NOT NULL,
+      status text NOT NULL,
+      created_at timestamptz NOT NULL,
+      finished_at timestamptz
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key text PRIMARY KEY,
+      value text NOT NULL
+    )
+  `);
+  databaseBacked = true;
+  await loadSettings();
+  state.messages = await loadMessages();
+}
+
+async function loadSettings() {
+  if (!databaseBacked) return;
+  const { rows } = await pool.query("SELECT key, value FROM settings");
+  for (const row of rows) {
+    if (row.key in runtimeSettings) {
+      runtimeSettings[row.key] = positiveInt(row.value, runtimeSettings[row.key]);
+    }
+  }
+  await saveSettings();
+}
+
+async function saveSettings() {
+  if (!databaseBacked) return;
+  for (const [key, value] of Object.entries(runtimeSettings)) {
+    await pool.query(
+      `INSERT INTO settings (key, value)
+       VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [key, String(value)],
+    );
+  }
+}
+
+async function loadMessages() {
+  const { rows } = await pool.query(
+    `SELECT id, speaker, text, status, created_at, finished_at
+     FROM messages
+     ORDER BY created_at ASC
+     LIMIT $1`,
+    [runtimeSettings.maxTranscriptMessages],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    speaker: row.speaker,
+    text: row.text,
+    status: row.status,
+    createdAt: new Date(row.created_at).toISOString(),
+    ...(row.finished_at ? { finishedAt: new Date(row.finished_at).toISOString() } : {}),
+  }));
+}
+
+async function saveMessage(message) {
+  if (!databaseBacked) return;
+  await pool.query(
+    `INSERT INTO messages (id, speaker, text, status, created_at, finished_at)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (id) DO UPDATE SET
+       text = EXCLUDED.text,
+       status = EXCLUDED.status,
+       finished_at = EXCLUDED.finished_at`,
+    [
+      message.id,
+      message.speaker,
+      message.text,
+      message.status,
+      message.createdAt,
+      message.finishedAt || null,
+    ],
+  );
+}
+
+async function clearTranscriptStore() {
+  if (databaseBacked) await pool.query("DELETE FROM messages");
 }
 
 function readJson(req) {
@@ -539,6 +798,7 @@ function validateProductionConfig() {
   if (process.env.NODE_ENV !== "production") return;
   const missing = [];
   if (!process.env.ROUNDTABLE_PASSWORD) missing.push("ROUNDTABLE_PASSWORD");
+  if (!process.env.ADMIN_PASSWORD) missing.push("ADMIN_PASSWORD");
   if (!process.env.SESSION_SECRET) missing.push("SESSION_SECRET");
   if (!process.env.OPENAI_API_KEY) missing.push("OPENAI_API_KEY");
   if (!process.env.GEMINI_API_KEY) missing.push("GEMINI_API_KEY");

@@ -19,9 +19,23 @@ services:
         sync: false
       - key: SESSION_SECRET
         sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: roundtable-postgres
+          property: connectionString
       - key: MODEL_TURNS_PER_HOUR
         value: "30"
       - key: USER_MESSAGES_PER_HOUR
         value: "120"
       - key: MAX_TRANSCRIPT_MESSAGES
         value: "200"
+
+databases:
+  - name: roundtable-postgres
+    databaseName: roundtable
+    user: roundtable
+    plan: free
+    postgresMajorVersion: "16"
+    ipAllowList: []

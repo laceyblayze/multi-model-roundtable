@@ -144,6 +144,37 @@ h2 {
   accent-color: var(--accent);
 }
 
+.admin-panel input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+}
+
+.admin-login,
+.admin-controls {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-controls label {
+  display: grid;
+  gap: 6px;
+  min-height: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.admin-status {
+  min-height: 18px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
 .status-list {
   display: grid;
   gap: 10px;

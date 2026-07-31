@@ -42,6 +42,32 @@
           <dl id="usage" class="status-list"></dl>
         </section>
 
+        <section class="panel admin-panel">
+          <h2>Admin</h2>
+          <form id="adminLogin" class="admin-login">
+            <input id="adminPassword" type="password" autocomplete="current-password" placeholder="Admin password">
+            <button type="submit" class="secondary">Unlock admin</button>
+          </form>
+          <div id="adminControls" class="admin-controls" hidden>
+            <label>
+              Model turns/hr
+              <input id="modelTurnsLimit" type="number" min="1" max="10000">
+            </label>
+            <label>
+              Messages/hr
+              <input id="userMessagesLimit" type="number" min="1" max="10000">
+            </label>
+            <label>
+              Transcript cap
+              <input id="transcriptLimit" type="number" min="1" max="10000">
+            </label>
+            <button id="saveLimits" type="button" class="secondary">Save limits</button>
+            <button id="clearTranscript" type="button" class="quiet">Clear transcript</button>
+            <button id="clearSessions" type="button" class="quiet">Clear sessions</button>
+          </div>
+          <p id="adminStatus" class="admin-status"></p>
+        </section>
+
         <div class="actions">
           <button id="nextTurn" type="button">Next model turn</button>
           <button id="runRound" type="button" class="secondary">Run one round</button>

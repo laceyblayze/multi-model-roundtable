@@ -13,10 +13,22 @@ const gate = document.querySelector("#gate");
 const loginForm = document.querySelector("#loginForm");
 const loginError = document.querySelector("#loginError");
 const passwordInput = document.querySelector("#password");
+const adminLogin = document.querySelector("#adminLogin");
+const adminPassword = document.querySelector("#adminPassword");
+const adminControls = document.querySelector("#adminControls");
+const adminStatus = document.querySelector("#adminStatus");
+const modelTurnsLimit = document.querySelector("#modelTurnsLimit");
+const userMessagesLimit = document.querySelector("#userMessagesLimit");
+const transcriptLimit = document.querySelector("#transcriptLimit");
+const saveLimitsButton = document.querySelector("#saveLimits");
+const clearTranscriptButton = document.querySelector("#clearTranscript");
+const clearSessionsButton = document.querySelector("#clearSessions");
 
 let state = null;
+let adminState = null;
 
 await refresh();
+await refreshAdmin();
 
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -27,6 +39,18 @@ loginForm.addEventListener("submit", async (event) => {
     await refresh();
   } catch (error) {
     loginError.textContent = error.message;
+  }
+});
+
+adminLogin.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  adminStatus.textContent = "";
+  try {
+    adminState = await postAdmin("/api/admin/login", { password: adminPassword.value });
+    adminPassword.value = "";
+    renderAdmin();
+  } catch (error) {
+    adminStatus.textContent = error.message;
   }
 });
 
@@ -64,6 +88,45 @@ logoutButton.addEventListener("click", async () => {
   await refresh();
 });
 
+saveLimitsButton.addEventListener("click", async () => {
+  adminStatus.textContent = "";
+  try {
+    adminState = await postAdmin("/api/admin/limits", {
+      modelTurnsPerHour: Number(modelTurnsLimit.value),
+      userMessagesPerHour: Number(userMessagesLimit.value),
+      maxTranscriptMessages: Number(transcriptLimit.value),
+    });
+    adminStatus.textContent = "Limits saved.";
+    await refresh();
+    renderAdmin();
+  } catch (error) {
+    adminStatus.textContent = error.message;
+  }
+});
+
+clearTranscriptButton.addEventListener("click", async () => {
+  adminStatus.textContent = "";
+  try {
+    adminState = await postAdmin("/api/admin/clear-transcript", {});
+    adminStatus.textContent = "Transcript cleared.";
+    await refresh();
+    renderAdmin();
+  } catch (error) {
+    adminStatus.textContent = error.message;
+  }
+});
+
+clearSessionsButton.addEventListener("click", async () => {
+  adminStatus.textContent = "";
+  try {
+    adminState = await postAdmin("/api/admin/clear-sessions", {});
+    adminStatus.textContent = "Other sessions cleared.";
+    renderAdmin();
+  } catch (error) {
+    adminStatus.textContent = error.message;
+  }
+});
+
 turnInputs.forEach((input) => {
   input.addEventListener("change", render);
 });
@@ -86,6 +149,12 @@ async function refresh() {
   render();
 }
 
+async function refreshAdmin() {
+  const response = await fetch("/api/admin");
+  adminState = await response.json();
+  renderAdmin();
+}
+
 async function post(path, body) {
   const response = await fetch(path, {
     method: "POST",
@@ -96,6 +165,17 @@ async function post(path, body) {
   state = payload;
   render();
   if (!response.ok) throw new Error(payload.error || "Request failed.");
+  return payload;
+}
+
+async function postAdmin(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "Admin request failed.");
   return payload;
 }
 
@@ -134,6 +214,10 @@ function render() {
       <dt>Transcript cap</dt>
       <dd>${state.limits?.maxTranscriptMessages || "-"}</dd>
     </div>
+    <div class="status-row">
+      <dt>Storage</dt>
+      <dd>${state.persistence?.databaseBacked ? "Database" : "Memory"}</dd>
+    </div>
   `;
 
   messagesEl.innerHTML = state.messages.length
@@ -148,6 +232,22 @@ function render() {
   messageText.disabled = !state.authenticated;
   resetButton.disabled = !state.authenticated;
   logoutButton.disabled = !state.authenticated;
+}
+
+function renderAdmin() {
+  if (!adminState) return;
+  const unlocked = Boolean(adminState.adminAuthenticated);
+  adminLogin.hidden = unlocked;
+  adminControls.hidden = !unlocked;
+  if (!unlocked) {
+    adminStatus.textContent ||= "";
+    return;
+  }
+
+  modelTurnsLimit.value = adminState.settings.modelTurnsPerHour;
+  userMessagesLimit.value = adminState.settings.userMessagesPerHour;
+  transcriptLimit.value = adminState.settings.maxTranscriptMessages;
+  adminStatus.textContent ||= `${adminState.transcriptCount} messages, ${adminState.sessionCount} active sessions.`;
 }
 
 function renderMessage(message) {

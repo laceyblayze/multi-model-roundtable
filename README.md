@@ -11,6 +11,7 @@ A local browser app where you talk to Gemini, Grok, and ChatGPT in one shared tr
    - `XAI_API_KEY`
    - `ROUNDTABLE_PASSWORD`
    - `SESSION_SECRET`
+   - `ADMIN_PASSWORD`
 3. Start the app:
 
 ```bash
@@ -21,6 +22,8 @@ Open `http://localhost:4177`.
 
 If `ROUNDTABLE_PASSWORD` is set, the browser will ask for it before allowing messages or model turns. Production deploys require the password and session secret.
 
+If `DATABASE_URL` is set, transcript messages and limit settings are stored in PostgreSQL and survive restarts. Without it, the app uses in-memory storage for local development.
+
 ## How turns work
 
 - You can message the whole room at any time.
@@ -28,6 +31,16 @@ If `ROUNDTABLE_PASSWORD` is set, the browser will ask for it before allowing mes
 - `Run one round` calls each selected model once, sequentially.
 - Models are instructed not to speak for each other or invent future turns.
 - The transcript is held in local server memory and clears when you restart or press `Reset`.
+- On Render, the transcript is stored in PostgreSQL when provisioned through `render.yaml`.
+
+## Admin
+
+Use the Admin panel to unlock live controls with `ADMIN_PASSWORD`.
+
+- Change hourly model-turn and user-message limits without redeploying.
+- Change the transcript cap without redeploying.
+- Clear transcript history.
+- Clear active sessions.
 
 ## Current API shape
 

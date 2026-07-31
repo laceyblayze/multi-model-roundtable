@@ -12,6 +12,7 @@ OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=...
 XAI_API_KEY=xai-...
 ROUNDTABLE_PASSWORD=your-private-room-password
+ADMIN_PASSWORD=your-private-admin-password
 SESSION_SECRET=a-long-random-secret-at-least-32-characters
 MODEL_TURNS_PER_HOUR=30
 USER_MESSAGES_PER_HOUR=120
@@ -37,9 +38,11 @@ This project includes `render.yaml`, so Render can create the web service from a
    - `GEMINI_API_KEY`
    - `XAI_API_KEY`
    - `ROUNDTABLE_PASSWORD`
+   - `ADMIN_PASSWORD`
    - `SESSION_SECRET`
-6. Deploy.
-7. Open `/api/health` on the Render URL. It should return `ok: true`.
+6. Render provisions `roundtable-postgres` and injects `DATABASE_URL` automatically.
+7. Deploy.
+8. Open `/api/health` on the Render URL. It should return `ok: true`.
 
 ## Railway
 
@@ -59,7 +62,9 @@ fly secrets set OPENAI_API_KEY=sk-...
 fly secrets set GEMINI_API_KEY=...
 fly secrets set XAI_API_KEY=xai-...
 fly secrets set ROUNDTABLE_PASSWORD=...
+fly secrets set ADMIN_PASSWORD=...
 fly secrets set SESSION_SECRET=...
+fly secrets set DATABASE_URL=...
 fly secrets set MODEL_TURNS_PER_HOUR=30
 fly secrets set USER_MESSAGES_PER_HOUR=120
 fly secrets set MAX_TRANSCRIPT_MESSAGES=200
@@ -70,14 +75,15 @@ fly deploy
 
 - API keys only live on the server.
 - Visitors must enter `ROUNDTABLE_PASSWORD` before using the room.
+- Admin controls require `ADMIN_PASSWORD`.
 - Sessions use signed, HTTP-only cookies.
 - Production refuses to start if critical secrets are missing.
 - Each session has hourly limits for user messages and model turns.
 - The transcript is capped so prompt size cannot grow forever.
+- PostgreSQL stores transcript history and live settings when `DATABASE_URL` is present.
 
 ## Still Worth Adding Later
 
 - Real user accounts if multiple groups need separate rooms.
-- Database-backed transcripts if you want history after restarts.
-- Admin controls for clearing sessions and changing limits without redeploying.
+- Separate rooms with per-room transcript history.
 - Provider-side spending caps in OpenAI, Google, and xAI billing dashboards.

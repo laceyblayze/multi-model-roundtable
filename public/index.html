@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Model Roundtable</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <section id="gate" class="gate" hidden>
+      <form id="loginForm" class="gate-form">
+        <p class="eyebrow">Private roundtable</p>
+        <h1>Enter the room</h1>
+        <p class="gate-copy">This public-ready build is protected so model calls stay intentional.</p>
+        <input id="password" type="password" autocomplete="current-password" placeholder="Password">
+        <button type="submit">Unlock</button>
+        <p id="loginError" class="error-text" role="alert"></p>
+      </form>
+    </section>
+
+    <main class="shell">
+      <aside class="sidebar" aria-label="Roundtable controls">
+        <div>
+          <p class="eyebrow">Local roundtable</p>
+          <h1>Gemini, Grok, ChatGPT, and you</h1>
+        </div>
+
+        <section class="panel">
+          <h2>Turn Order</h2>
+          <label><input type="checkbox" value="chatgpt" checked> ChatGPT</label>
+          <label><input type="checkbox" value="gemini" checked> Gemini</label>
+          <label><input type="checkbox" value="grok" checked> Grok</label>
+        </section>
+
+        <section class="panel">
+          <h2>Status</h2>
+          <dl id="status" class="status-list"></dl>
+        </section>
+
+        <section class="panel">
+          <h2>Usage</h2>
+          <dl id="usage" class="status-list"></dl>
+        </section>
+
+        <div class="actions">
+          <button id="nextTurn" type="button">Next model turn</button>
+          <button id="runRound" type="button" class="secondary">Run one round</button>
+          <button id="reset" type="button" class="quiet">Reset</button>
+          <button id="logout" type="button" class="quiet">Lock room</button>
+        </div>
+      </aside>
+
+      <section class="workspace" aria-label="Shared conversation">
+        <div class="conversation-head">
+          <div>
+            <p class="eyebrow">Shared transcript</p>
+            <h2 id="nextSpeaker">Loading...</h2>
+          </div>
+        </div>
+
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <form id="composer" class="composer">
+          <textarea id="messageText" rows="3" placeholder="Talk to the whole room..." required></textarea>
+          <button type="submit">Send as you</button>
+        </form>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: multi-model-roundtable
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: XAI_API_KEY
+        sync: false
+      - key: ROUNDTABLE_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: MODEL_TURNS_PER_HOUR
+        value: "30"
+      - key: USER_MESSAGES_PER_HOUR
+        value: "120"
+      - key: MAX_TRANSCRIPT_MESSAGES
+        value: "200"

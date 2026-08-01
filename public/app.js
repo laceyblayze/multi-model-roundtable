@@ -8,6 +8,7 @@ const nextTurnButton = document.querySelector("#nextTurn");
 const runRoundButton = document.querySelector("#runRound");
 const resetButton = document.querySelector("#reset");
 const logoutButton = document.querySelector("#logout");
+const exportTranscriptButton = document.querySelector("#exportTranscript");
 const turnInputs = [...document.querySelectorAll('input[type="checkbox"]')];
 const gate = document.querySelector("#gate");
 const loginForm = document.querySelector("#loginForm");
@@ -86,6 +87,10 @@ resetButton.addEventListener("click", async () => {
 logoutButton.addEventListener("click", async () => {
   await post("/api/logout", {});
   await refresh();
+});
+
+exportTranscriptButton.addEventListener("click", async () => {
+  await exportTranscript();
 });
 
 saveLimitsButton.addEventListener("click", async () => {
@@ -232,6 +237,7 @@ function render() {
   messageText.disabled = !state.authenticated;
   resetButton.disabled = !state.authenticated;
   logoutButton.disabled = !state.authenticated;
+  exportTranscriptButton.disabled = !state.authenticated;
 }
 
 function renderAdmin() {
@@ -283,6 +289,103 @@ function showInlineError(message) {
     createdAt: new Date().toISOString(),
   });
   render();
+}
+
+async function exportTranscript() {
+  if (!state?.authenticated) return;
+  exportTranscriptButton.disabled = true;
+  const originalLabel = exportTranscriptButton.textContent;
+  exportTranscriptButton.textContent = "Exporting...";
+  try {
+    const documentHtml = buildTranscriptDocument();
+    const filename = `multi-model-roundtable-${new Date().toISOString().slice(0, 10)}.doc`;
+    const blob = new Blob([documentHtml], { type: "application/msword;charset=utf-8" });
+    await saveTranscriptFile(blob, filename);
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    showInlineError(`Export failed: ${error.message}`);
+  } finally {
+    exportTranscriptButton.textContent = originalLabel;
+    exportTranscriptButton.disabled = !state?.authenticated;
+  }
+}
+
+function buildTranscriptDocument() {
+  const generatedAt = new Date().toLocaleString([], {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const messages = state.messages || [];
+  const body = messages.length
+    ? messages.map(renderExportMessage).join("")
+    : "<p>No messages have been added yet.</p>";
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Multi-Model Roundtable Transcript</title>
+    <style>
+      body { color: #1d2430; font-family: Arial, sans-serif; line-height: 1.5; margin: 36px; }
+      h1 { font-size: 24px; margin: 0 0 8px; }
+      .meta { color: #657184; font-size: 12px; margin-bottom: 24px; }
+      .message { border-top: 1px solid #d9dee7; padding: 14px 0; }
+      .speaker { font-size: 13px; font-weight: 700; letter-spacing: 0.03em; margin-bottom: 6px; text-transform: uppercase; }
+      .speaker.user { color: #0e4f44; }
+      .speaker.model { color: #1d2430; }
+      .time { color: #657184; font-size: 12px; font-weight: 400; text-transform: none; }
+      .content { white-space: pre-wrap; }
+      .error { color: #b42318; }
+    </style>
+  </head>
+  <body>
+    <h1>Multi-Model Roundtable Transcript</h1>
+    <div class="meta">Exported ${escapeHtml(generatedAt)} · ${messages.length} messages</div>
+    ${body}
+  </body>
+</html>`;
+}
+
+function renderExportMessage(message) {
+  const participant = state.participants[message.speaker] || { name: message.speaker, role: "system" };
+  const isUser = message.speaker === "user";
+  const roleLabel = isUser ? "USER" : participant.role === "model" ? "MODEL" : "SYSTEM";
+  const speakerLabel = `${roleLabel}: ${participant.name || message.speaker}`;
+  const time = message.createdAt
+    ? new Date(message.createdAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
+    : "";
+  const content = message.status === "thinking" ? "Thinking..." : message.text;
+  return `
+    <section class="message ${message.status === "error" ? "error" : ""}">
+      <div class="speaker ${isUser ? "user" : "model"}">${escapeHtml(speakerLabel)} ${time ? `<span class="time">· ${escapeHtml(time)}</span>` : ""}</div>
+      <div class="content">${escapeHtml(content || "")}</div>
+    </section>
+  `;
+}
+
+async function saveTranscriptFile(blob, filename) {
+  if ("showSaveFilePicker" in window) {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{
+        description: "Google Docs compatible document",
+        accept: { "application/msword": [".doc"] },
+      }],
+    });
+    const writable = await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return;
+  }
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function formatRemaining(remaining, total) {

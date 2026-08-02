@@ -3,7 +3,19 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Model Roundtable</title>
+    <title>AI Roundtable</title>
+    <meta name="description" content="A shared AI roundtable with Gemini, Grok, ChatGPT, and you.">
+    <meta property="og:title" content="AI Roundtable">
+    <meta property="og:description" content="Gemini, Grok, ChatGPT, and you in one shared transcript.">
+    <meta property="og:image" content="https://multi-model-roundtable.onrender.com/assets/ai-roundtable-share.png">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://multi-model-roundtable.onrender.com/">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="AI Roundtable">
+    <meta name="twitter:description" content="Gemini, Grok, ChatGPT, and you in one shared transcript.">
+    <meta name="twitter:image" content="https://multi-model-roundtable.onrender.com/assets/ai-roundtable-share.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="/assets/favicon-512.png">
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
@@ -20,53 +32,56 @@
 
     <main class="shell">
       <aside class="sidebar" aria-label="Roundtable controls">
-        <div>
-          <p class="eyebrow">Local roundtable</p>
+        <div class="brand-block">
+          <img class="brand-logo" src="/assets/ai-roundtable-logo.png" alt="AI Roundtable created by Lacey Blayze">
+          <p class="eyebrow">Live roundtable</p>
           <h1>Gemini, Grok, ChatGPT, and you</h1>
         </div>
 
-        <section class="panel">
-          <h2>Turn Order</h2>
-          <label><input type="checkbox" value="chatgpt" checked> ChatGPT</label>
-          <label><input type="checkbox" value="gemini" checked> Gemini</label>
-          <label><input type="checkbox" value="grok" checked> Grok</label>
-        </section>
+        <div class="sidebar-main">
+          <section class="panel">
+            <h2>Turn Order</h2>
+            <label><input type="checkbox" value="chatgpt" checked> ChatGPT</label>
+            <label><input type="checkbox" value="gemini" checked> Gemini</label>
+            <label><input type="checkbox" value="grok" checked> Grok</label>
+          </section>
 
-        <section class="panel">
-          <h2>Status</h2>
-          <dl id="status" class="status-list"></dl>
-        </section>
+          <section class="panel">
+            <h2>Status</h2>
+            <dl id="status" class="status-list"></dl>
+          </section>
 
-        <section class="panel">
-          <h2>Usage</h2>
-          <dl id="usage" class="status-list"></dl>
-        </section>
+          <section class="panel">
+            <h2>Usage</h2>
+            <dl id="usage" class="status-list"></dl>
+          </section>
 
-        <section class="panel admin-panel">
-          <h2>Admin</h2>
-          <form id="adminLogin" class="admin-login">
-            <input id="adminPassword" type="password" autocomplete="current-password" placeholder="Admin password">
-            <button type="submit" class="secondary">Unlock admin</button>
-          </form>
-          <div id="adminControls" class="admin-controls" hidden>
-            <label>
-              Model turns/hr
-              <input id="modelTurnsLimit" type="number" min="1" max="10000">
-            </label>
-            <label>
-              Messages/hr
-              <input id="userMessagesLimit" type="number" min="1" max="10000">
-            </label>
-            <label>
-              Transcript cap
-              <input id="transcriptLimit" type="number" min="1" max="10000">
-            </label>
-            <button id="saveLimits" type="button" class="secondary">Save limits</button>
-            <button id="clearTranscript" type="button" class="quiet">Clear transcript</button>
-            <button id="clearSessions" type="button" class="quiet">Clear sessions</button>
-          </div>
-          <p id="adminStatus" class="admin-status"></p>
-        </section>
+          <section class="panel admin-panel">
+            <h2>Admin</h2>
+            <form id="adminLogin" class="admin-login">
+              <input id="adminPassword" type="password" autocomplete="current-password" placeholder="Admin password">
+              <button type="submit" class="secondary">Unlock admin</button>
+            </form>
+            <div id="adminControls" class="admin-controls" hidden>
+              <label>
+                Model turns/hr
+                <input id="modelTurnsLimit" type="number" min="1" max="10000">
+              </label>
+              <label>
+                Messages/hr
+                <input id="userMessagesLimit" type="number" min="1" max="10000">
+              </label>
+              <label>
+                Transcript cap
+                <input id="transcriptLimit" type="number" min="1" max="10000">
+              </label>
+              <button id="saveLimits" type="button" class="secondary">Save limits</button>
+              <button id="clearTranscript" type="button" class="quiet">Clear transcript</button>
+              <button id="clearSessions" type="button" class="quiet">Clear sessions</button>
+            </div>
+            <p id="adminStatus" class="admin-status"></p>
+          </section>
+        </div>
 
         <div class="actions">
           <button id="nextTurn" type="button">Next model turn</button>

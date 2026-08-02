@@ -1,5 +1,6 @@
 import http from "node:http";
 import crypto from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { readFileSync, existsSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,13 @@ const adminPassword = process.env.ADMIN_PASSWORD || "";
 const authRequired = Boolean(authPassword);
 const adminRequired = Boolean(adminPassword);
 const secureCookies = process.env.NODE_ENV === "production";
+const maxRequestBodyBytes = 7_000_000;
+const maxImageAttachments = 3;
+const maxImageDataUrlLength = 4_500_000;
+const maxLinksPerMessage = 3;
+const maxFetchedPageBytes = 300_000;
+const maxFetchedPageChars = 4_000;
+const allowedImageMimeTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const runtimeSettings = {
   modelTurnsPerHour: Number(process.env.MODEL_TURNS_PER_HOUR || 30),
   userMessagesPerHour: Number(process.env.USER_MESSAGES_PER_HOUR || 120),
@@ -214,8 +222,9 @@ async function routeApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/message") {
     const body = await readJson(req);
     const text = String(body.text || "").trim();
-    if (!text) {
-      sendJson(res, 400, { error: "Message text is required." });
+    const providedAttachments = Array.isArray(body.attachments) ? body.attachments : [];
+    if (!text && !providedAttachments.length) {
+      sendJson(res, 400, { error: "Message text or an attachment is required." });
       return;
     }
     const messageLimit = checkLimit(session, "userMessages", runtimeSettings.userMessagesPerHour);
@@ -223,7 +232,8 @@ async function routeApi(req, res, url) {
       sendJson(res, 429, snapshot(session, messageLimit.message));
       return;
     }
-    const message = makeMessage("user", text);
+    const attachments = await buildUserAttachments(text, providedAttachments);
+    const message = makeMessage("user", text, "complete", attachments);
     state.messages.push(message);
     await saveMessage(message);
     await trimTranscript();
@@ -294,11 +304,13 @@ function getNextSpeaker() {
 }
 
 async function callModel(speakerId) {
+  const imageInputs = collectImageInputs();
   if (speakerId === "chatgpt") return callResponsesApi({
     baseUrl: "https://api.openai.com/v1",
     apiKey: requireEnv("OPENAI_API_KEY"),
     model: participants.chatgpt.model,
     prompt: buildPrompt("ChatGPT"),
+    imageInputs,
   });
 
   if (speakerId === "grok") return callResponsesApi({
@@ -306,14 +318,24 @@ async function callModel(speakerId) {
     apiKey: requireEnv("XAI_API_KEY"),
     model: participants.grok.model,
     prompt: buildPrompt("Grok"),
+    imageInputs,
   });
 
-  if (speakerId === "gemini") return callGemini(buildPrompt("Gemini"));
+  if (speakerId === "gemini") return callGemini(buildPrompt("Gemini"), imageInputs);
 
   throw new Error(`Unknown speaker: ${speakerId}`);
 }
 
-async function callResponsesApi({ baseUrl, apiKey, model, prompt }) {
+async function callResponsesApi({ baseUrl, apiKey, model, prompt, imageInputs = [] }) {
+  const input = imageInputs.length
+    ? [{
+      role: "user",
+      content: [
+        { type: "input_text", text: prompt },
+        ...imageInputs.map((image) => ({ type: "input_image", image_url: image.dataUrl })),
+      ],
+    }]
+    : prompt;
   const response = await fetch(`${baseUrl}/responses`, {
     method: "POST",
     headers: {
@@ -322,7 +344,7 @@ async function callResponsesApi({ baseUrl, apiKey, model, prompt }) {
     },
     body: JSON.stringify({
       model,
-      input: prompt,
+      input,
       store: false,
     }),
   });
@@ -332,7 +354,16 @@ async function callResponsesApi({ baseUrl, apiKey, model, prompt }) {
   return extractResponseText(data);
 }
 
-async function callGemini(prompt) {
+async function callGemini(prompt, imageInputs = []) {
+  const input = imageInputs.length
+    ? [{
+      role: "user",
+      content: [
+        { type: "input_text", text: prompt },
+        ...imageInputs.map((image) => ({ type: "input_image", image_url: image.dataUrl })),
+      ],
+    }]
+    : prompt;
   const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
     method: "POST",
     headers: {
@@ -343,7 +374,7 @@ async function callGemini(prompt) {
     body: JSON.stringify({
       model: participants.gemini.model,
       store: false,
-      input: prompt,
+      input,
     }),
   });
 
@@ -355,7 +386,7 @@ async function callGemini(prompt) {
 function buildPrompt(speakerName) {
   const transcript = state.messages
     .filter((msg) => msg.status !== "thinking")
-    .map((msg) => `${participants[msg.speaker]?.name || msg.speaker}: ${msg.text}`)
+    .map(messageForPrompt)
     .join("\n\n");
 
   return [
@@ -367,6 +398,35 @@ function buildPrompt(speakerName) {
     "Shared transcript:",
     transcript || "No one has spoken yet.",
   ].join("\n");
+}
+
+function messageForPrompt(message) {
+  const speaker = participants[message.speaker]?.name || message.speaker;
+  const pieces = [`${speaker}: ${message.text || "[Attachment only]"}`];
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  for (const attachment of attachments) {
+    if (attachment.type === "link") {
+      pieces.push([
+        `[Opened web page: ${attachment.url}]`,
+        attachment.title ? `Title: ${attachment.title}` : "",
+        attachment.description ? `Description: ${attachment.description}` : "",
+        attachment.text ? `Page excerpt: ${attachment.text}` : "",
+        attachment.error ? `Open error: ${attachment.error}` : "",
+      ].filter(Boolean).join("\n"));
+    }
+    if (attachment.type === "image") {
+      pieces.push(`[Image attached: ${attachment.name || "pasted image"} (${attachment.mimeType || "image"})]`);
+    }
+  }
+  return pieces.join("\n");
+}
+
+function collectImageInputs() {
+  return state.messages
+    .filter((msg) => msg.status !== "thinking")
+    .flatMap((msg) => Array.isArray(msg.attachments) ? msg.attachments : [])
+    .filter((attachment) => attachment.type === "image" && attachment.dataUrl)
+    .slice(-10);
 }
 
 function extractResponseText(data) {
@@ -475,12 +535,200 @@ function publicParticipants() {
   ]));
 }
 
-function makeMessage(speaker, text, status = "complete") {
+async function buildUserAttachments(text, providedAttachments) {
+  const imageAttachments = sanitizeImageAttachments(providedAttachments);
+  const linkAttachments = text ? await openLinksFromText(text) : [];
+  return [...imageAttachments, ...linkAttachments];
+}
+
+function sanitizeImageAttachments(attachments) {
+  return attachments
+    .filter((attachment) => attachment?.type === "image")
+    .slice(0, maxImageAttachments)
+    .map((attachment, index) => {
+      const mimeType = String(attachment.mimeType || "").toLowerCase();
+      const dataUrl = String(attachment.dataUrl || "");
+      if (!allowedImageMimeTypes.has(mimeType)) {
+        throw new Error("Only PNG, JPEG, WebP, and GIF images can be pasted.");
+      }
+      if (!dataUrl.startsWith(`data:${mimeType};base64,`)) {
+        throw new Error("The pasted image could not be read.");
+      }
+      if (dataUrl.length > maxImageDataUrlLength) {
+        throw new Error("That image is too large. Try a smaller image or screenshot.");
+      }
+      return {
+        type: "image",
+        name: String(attachment.name || `pasted-image-${index + 1}`).slice(0, 120),
+        mimeType,
+        dataUrl,
+      };
+    });
+}
+
+async function openLinksFromText(text) {
+  const urls = extractUrls(text).slice(0, maxLinksPerMessage);
+  const attachments = [];
+  for (const url of urls) {
+    attachments.push(await openWebPage(url));
+  }
+  return attachments;
+}
+
+function extractUrls(text) {
+  const matches = String(text).match(/https?:\/\/[^\s<>"')]+/gi) || [];
+  const urls = [];
+  const seen = new Set();
+  for (const match of matches) {
+    const trimmed = match.replace(/[.,;:!?]+$/g, "");
+    try {
+      const parsed = new URL(trimmed);
+      if (!["http:", "https:"].includes(parsed.protocol)) continue;
+      const normalized = parsed.toString();
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        urls.push(normalized);
+      }
+    } catch {
+      // Ignore malformed link-like text.
+    }
+  }
+  return urls;
+}
+
+async function openWebPage(url) {
+  try {
+    await assertPublicHttpUrl(url);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          Accept: "text/html,text/plain;q=0.9,*/*;q=0.8",
+          "User-Agent": "MultiModelRoundtable/1.0 (+https://multi-model-roundtable.onrender.com)",
+        },
+        redirect: "follow",
+      });
+      const contentType = response.headers.get("content-type") || "";
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!contentType.includes("text/html") && !contentType.includes("text/plain")) {
+        throw new Error(`Unsupported content type: ${contentType || "unknown"}`);
+      }
+      const raw = await readResponseText(response, maxFetchedPageBytes);
+      const page = extractPageSummary(raw, contentType);
+      return {
+        type: "link",
+        url,
+        title: page.title,
+        description: page.description,
+        text: page.text.slice(0, maxFetchedPageChars),
+        fetchedAt: new Date().toISOString(),
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (error) {
+    return {
+      type: "link",
+      url,
+      title: "Unable to open web page",
+      text: "",
+      error: error.name === "AbortError" ? "Request timed out." : error.message,
+      fetchedAt: new Date().toISOString(),
+    };
+  }
+}
+
+async function assertPublicHttpUrl(url) {
+  const parsed = new URL(url);
+  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Only HTTP and HTTPS links can be opened.");
+  if (isBlockedHostname(parsed.hostname)) throw new Error("Private network links cannot be opened.");
+  const records = await lookup(parsed.hostname, { all: true, verbatim: true });
+  if (!records.length || records.some((record) => isBlockedAddress(record.address))) {
+    throw new Error("Private network links cannot be opened.");
+  }
+}
+
+function isBlockedHostname(hostname) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "localhost" || host.endsWith(".localhost") || isBlockedAddress(host);
+}
+
+function isBlockedAddress(address) {
+  const value = address.toLowerCase();
+  if (value === "::1" || value.startsWith("fe80:") || value.startsWith("fc") || value.startsWith("fd")) return true;
+  const parts = value.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) return false;
+  const [a, b] = parts;
+  return a === 0
+    || a === 10
+    || a === 127
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168);
+}
+
+async function readResponseText(response, maxBytes) {
+  const reader = response.body?.getReader();
+  if (!reader) return response.text();
+  const chunks = [];
+  let total = 0;
+  while (total < maxBytes) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const next = value.slice(0, Math.max(0, maxBytes - total));
+    chunks.push(next);
+    total += next.length;
+  }
+  await reader.cancel().catch(() => {});
+  return new TextDecoder("utf-8", { fatal: false }).decode(Buffer.concat(chunks));
+}
+
+function extractPageSummary(raw, contentType) {
+  if (contentType.includes("text/plain")) {
+    return { title: "", description: "", text: collapseWhitespace(raw) };
+  }
+  const title = decodeHtmlEntities(matchFirst(raw, /<title[^>]*>([\s\S]*?)<\/title>/i));
+  const description = decodeHtmlEntities(
+    matchFirst(raw, /<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["'][^>]*>/i)
+      || matchFirst(raw, /<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description["'][^>]*>/i),
+  );
+  const text = collapseWhitespace(decodeHtmlEntities(raw
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
+    .replace(/<[^>]+>/g, " ")));
+  return { title, description, text };
+}
+
+function matchFirst(value, pattern) {
+  return pattern.exec(value)?.[1] || "";
+}
+
+function collapseWhitespace(value) {
+  return String(value).replace(/\s+/g, " ").trim();
+}
+
+function decodeHtmlEntities(value) {
+  return String(value)
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)));
+}
+
+function makeMessage(speaker, text, status = "complete", attachments = []) {
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     speaker,
     text,
     status,
+    attachments,
     createdAt: new Date().toISOString(),
   };
 }
@@ -674,6 +922,7 @@ async function initStore() {
       finished_at timestamptz
     )
   `);
+  await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS settings (
       key text PRIMARY KEY,
@@ -710,7 +959,7 @@ async function saveSettings() {
 
 async function loadMessages() {
   const { rows } = await pool.query(
-    `SELECT id, speaker, text, status, created_at, finished_at
+    `SELECT id, speaker, text, status, attachments, created_at, finished_at
      FROM messages
      ORDER BY created_at ASC
      LIMIT $1`,
@@ -721,6 +970,7 @@ async function loadMessages() {
     speaker: row.speaker,
     text: row.text,
     status: row.status,
+    attachments: Array.isArray(row.attachments) ? row.attachments : [],
     createdAt: new Date(row.created_at).toISOString(),
     ...(row.finished_at ? { finishedAt: new Date(row.finished_at).toISOString() } : {}),
   }));
@@ -729,17 +979,19 @@ async function loadMessages() {
 async function saveMessage(message) {
   if (!databaseBacked) return;
   await pool.query(
-    `INSERT INTO messages (id, speaker, text, status, created_at, finished_at)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO messages (id, speaker, text, status, attachments, created_at, finished_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (id) DO UPDATE SET
        text = EXCLUDED.text,
        status = EXCLUDED.status,
+       attachments = EXCLUDED.attachments,
        finished_at = EXCLUDED.finished_at`,
     [
       message.id,
       message.speaker,
       message.text,
       message.status,
+      JSON.stringify(Array.isArray(message.attachments) ? message.attachments : []),
       message.createdAt,
       message.finishedAt || null,
     ],
@@ -755,7 +1007,7 @@ function readJson(req) {
     let raw = "";
     req.on("data", (chunk) => {
       raw += chunk;
-      if (raw.length > 1_000_000) {
+      if (raw.length > maxRequestBodyBytes) {
         req.destroy();
         reject(new Error("Request body is too large."));
       }
